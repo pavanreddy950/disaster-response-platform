@@ -29,9 +29,9 @@ export class FakeSocialClient implements SocialMediaClient {
   }
 }
 
-export function buildTestApp(overrides: { geocoder?: Geocoder } = {}) {
+export function buildTestApp(overrides: { geocoder?: Geocoder; env?: Record<string, string> } = {}) {
   const db = openDatabase(':memory:');
-  const config = loadConfig({ REPORTS_CACHE_TTL_SECONDS: '60' } as NodeJS.ProcessEnv);
+  const config = loadConfig({ REPORTS_CACHE_TTL_SECONDS: '60', ...overrides.env } as NodeJS.ProcessEnv);
   const social = new FakeSocialClient();
   const { app, events } = createApp({
     db,

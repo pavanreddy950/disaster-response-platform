@@ -135,9 +135,9 @@ describe('Disasters API', () => {
 
     it('contributors can update only their own disasters; admins any', async () => {
       const d = await createAs(CONTRIBUTOR);
-      await request(ctx.app).patch(`/disasters/${d.id}`).set(CONTRIBUTOR_2).send({ status: 'active' }).expect(403);
-      await request(ctx.app).patch(`/disasters/${d.id}`).set(CONTRIBUTOR).send({ status: 'active' }).expect(200);
-      await request(ctx.app).patch(`/disasters/${d.id}`).set(ADMIN).send({ status: 'contained' }).expect(200);
+      await request(ctx.app).patch(`/disasters/${d.id}`).set(CONTRIBUTOR_2).send({ status: 'verified' }).expect(403);
+      await request(ctx.app).patch(`/disasters/${d.id}`).set(CONTRIBUTOR).send({ status: 'verified' }).expect(200);
+      await request(ctx.app).patch(`/disasters/${d.id}`).set(ADMIN).send({ status: 'active' }).expect(200);
     });
 
     it('a resolved disaster can only be reopened by an admin', async () => {

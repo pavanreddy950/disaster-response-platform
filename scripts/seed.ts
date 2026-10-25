@@ -1,5 +1,5 @@
 /**
- * Seeds demo resources (and a couple of disasters) so the API is explorable immediately.
+ * Seeds demo resources (and one sample disaster per lifecycle status) so the API is explorable immediately.
  * Idempotent: resources are only inserted when the table is empty.
  *   npm run seed
  */
@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { loadConfig } from '../src/config.js';
 import { openDatabase } from '../src/db/connection.js';
 import { DisasterRepository } from '../src/modules/disasters/disaster.repository.js';
+import type { Disaster } from '../src/modules/disasters/disaster.types.js';
 import { ResourceRepository } from '../src/modules/resources/resource.repository.js';
 import type { CreateResourceInput } from '../src/modules/resources/resource.schemas.js';
 
@@ -53,30 +54,61 @@ if (total === 0) {
   console.log(`Resources table already has ${total} rows, skipping`);
 }
 
-if (disasters.list({ limit: 1, offset: 0 }).total === 0) {
-  disasters.insert({
-    id: randomUUID(),
+// One sample per lifecycle stage, so the dashboard and GET /stats have something to show.
+const SAMPLE_DISASTERS: Array<Omit<Disaster, 'id' | 'created_at' | 'updated_at'>> = [
+  {
     title: 'Manhattan flash flooding',
     description: 'Heavy flooding has affected Manhattan, NYC. Subway stations closed.',
     location: { name: 'Manhattan, NYC', lat: 40.7831, lng: -73.9712, source: 'geocoded' },
     tags: ['flood', 'urban'],
     status: 'active',
     created_by: 'admin',
-    created_at: now,
-    updated_at: now,
-  });
-  disasters.insert({
-    id: randomUUID(),
+  },
+  {
     title: 'Mumbai monsoon waterlogging',
     description: 'Severe waterlogging reported across Mumbai after 300mm of rain.',
     location: { name: 'Mumbai', lat: 19.076, lng: 72.8777, source: 'geocoded' },
     tags: ['flood', 'monsoon'],
     status: 'reported',
     created_by: 'contributor1',
-    created_at: now,
-    updated_at: now,
-  });
-  console.log('Inserted 2 sample disasters');
+  },
+  {
+    title: 'Cyclone approaching Chennai coast',
+    description: 'IMD has confirmed a severe cyclonic storm expected to make landfall near Chennai within 36 hours.',
+    location: { name: 'Chennai', lat: 13.0827, lng: 80.2707, source: 'geocoded' },
+    tags: ['cyclone', 'coastal'],
+    status: 'verified',
+    created_by: 'contributor1',
+  },
+  {
+    title: 'Landslide near Aluva',
+    description: 'Landslide blocked roads near Aluva, Kerala. Rescue teams have stabilised the slope.',
+    location: { name: 'Aluva, Kerala', lat: 10.1004, lng: 76.357, source: 'geocoded' },
+    tags: ['landslide', 'monsoon'],
+    status: 'contained',
+    created_by: 'admin',
+  },
+  {
+    title: 'Tropical storm warning for Suva',
+    description: 'Tropical storm passed south of Suva, Fiji with minor damage; shelters have closed.',
+    location: { name: 'Suva, Fiji', lat: -18.1416, lng: 178.4419, source: 'geocoded' },
+    tags: ['storm'],
+    status: 'resolved',
+    created_by: 'admin',
+  },
+];
+
+if (disasters.list({ limit: 1, offset: 0 }).total === 0) {
+  db.transaction(() => {
+    for (const sample of SAMPLE_DISASTERS) {
+      // Goes through the repository, so each sample also gets its 'created' audit entry
+      disasters.insert(
+        { ...sample, id: randomUUID(), created_at: now, updated_at: now },
+        { action: 'created', actor: sample.created_by, changes: {}, at: now },
+      );
+    }
+  })();
+  console.log(`Inserted ${SAMPLE_DISASTERS.length} sample disasters`);
 }
 
 db.close();

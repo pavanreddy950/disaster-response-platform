@@ -3,94 +3,147 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Disaster Response – Live Feed</title>
-  <style>
-    :root { --bg: #f7f7f8; --fg: #1b1b1f; --muted: #6b6b76; --card: #fff; --border: #e3e3e8; --accent: #c2410c; }
-    @media (prefers-color-scheme: dark) { :root { --bg: #141417; --fg: #ececf1; --muted: #9a9aa6; --card: #1d1d22; --border: #2e2e36; --accent: #fb923c; } }
-    * { box-sizing: border-box; }
-    body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
-    main { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
-    h1 { font-size: 22px; margin: 0 0 4px; }
-    p { color: var(--muted); margin: 0 0 16px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-    form { display: grid; gap: 8px; }
-    input, textarea, select, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
-    button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
-    .row { display: flex; gap: 8px; flex-wrap: wrap; }
-    .row > * { flex: 1 1 160px; }
-    #status { font-size: 13px; }
-    .event { border-left: 3px solid var(--accent); padding: 6px 10px; margin: 8px 0; background: var(--bg); border-radius: 0 6px 6px 0; }
-    .event b { font-family: ui-monospace, monospace; }
-    .event small { color: var(--muted); }
-    a { color: var(--accent); }
-  </style>
+  <title>Santrionn Ops</title>
+  <meta name="description" content="Emergency operations dashboard for the Disaster Response Coordination Platform." />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22%3E%3Cpath fill=%22%23dc2626%22 d=%22M12 2 3 6v6c0 5 3.8 9.3 9 10 5.2-.7 9-5 9-10V6l-9-4Z%22/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+  <script>
+    // Apply saved theme before first paint (avoids a flash of the wrong theme).
+    try { const t = localStorage.getItem('santrionn.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (_) {}
+  </script>
 </head>
 <body>
-<main>
-  <h1>Disaster Response – live event feed</h1>
-  <p>Minimal client for the <code>/events</code> Server-Sent Events stream. Create a disaster below (or via the API) and watch the event arrive. <a href="/docs.html">API docs</a></p>
+  <a class="skip-link" href="#panel">Skip to incidents</a>
 
-  <div class="card">
-    <form id="create">
-      <div class="row">
-        <select id="token">
-          <option value="admin-token">admin</option>
-          <option value="contributor-token">contributor1</option>
-          <option value="contributor2-token">contributor2</option>
-        </select>
-        <input id="title" placeholder="Title" value="Flash flooding" required />
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 6v6c0 5 3.8 9.3 9 10 5.2-.7 9-5 9-10V6l-9-4Zm0 5a1.5 1.5 0 0 1 1.5 1.5v4a1.5 1.5 0 0 1-3 0v-4A1.5 1.5 0 0 1 12 7Zm0 9a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3Z"/></svg>
+      <div>
+        <h1>Santrionn Ops</h1>
+        <p class="subtitle">Disaster response coordination</p>
       </div>
-      <textarea id="description" rows="2" required>Heavy flooding has affected Manhattan, NYC.</textarea>
-      <input id="tags" placeholder="tags, comma separated" value="flood" />
-      <button>Create disaster</button>
-      <small id="result"></small>
+    </div>
+    <div class="topbar-actions">
+      <div id="conn" class="conn" data-state="connecting" role="status" aria-live="polite">
+        <span class="conn-dot" aria-hidden="true"></span><span class="conn-label">Connecting…</span>
+      </div>
+      <label class="role-select">
+        <span class="visually-hidden">Acting as</span>
+        <select id="role" aria-label="Acting as role">
+          <option value="admin">Admin</option>
+          <option value="contributor1">Contributor 1</option>
+          <option value="contributor2">Contributor 2</option>
+          <option value="viewer">Viewer (no token)</option>
+        </select>
+      </label>
+      <button id="new-incident" class="btn btn-primary" type="button">
+        <span aria-hidden="true">+</span> New incident
+      </button>
+      <button id="theme-toggle" class="btn btn-ghost btn-icon" type="button" aria-label="Theme: system" title="Theme: system">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18V3Z" /><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      </button>
+      <a class="btn btn-ghost" href="/docs.html" target="_blank" rel="noopener">API docs</a>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section id="kpis" class="kpis" aria-label="Key figures">
+      <!-- filled by app.js; skeletons until loaded -->
+      <div class="kpi skeleton"></div><div class="kpi skeleton"></div><div class="kpi skeleton"></div>
+      <div class="kpi skeleton"></div><div class="kpi skeleton"></div><div class="kpi skeleton"></div>
+    </section>
+
+    <div class="workspace">
+      <section class="card map-card" aria-label="Map">
+        <div class="toolbar" id="filters">
+          <div class="filter-group">
+            <span class="filter-label" id="status-filter-label">Status</span>
+            <div class="chips" id="status-filters" role="group" aria-labelledby="status-filter-label"></div>
+          </div>
+          <div class="filter-group">
+            <label class="filter-label" for="tag-filter">Tag</label>
+            <select id="tag-filter" class="select-sm"><option value="">All tags</option></select>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label" id="type-filter-label">Resources</span>
+            <div class="chips" id="type-filters" role="group" aria-labelledby="type-filter-label"></div>
+          </div>
+        </div>
+        <div class="map-wrap">
+          <div id="map" aria-label="Incident and resource map"></div>
+          <div id="map-fallback" class="map-fallback" hidden>Map unavailable (could not load Leaflet). Incidents are still listed in the panel.</div>
+          <div id="radius-control" class="radius-control" hidden>
+            <label for="radius-map">Radius <output id="radius-map-out">10 km</output></label>
+            <input id="radius-map" type="range" min="1" max="50" step="1" value="10" />
+          </div>
+        </div>
+      </section>
+
+      <section id="panel" class="card panel" aria-label="Incidents" tabindex="-1">
+        <div id="list-view">
+          <div class="panel-head">
+            <h2>Incidents <span id="incident-count" class="count"></span></h2>
+            <button id="refresh" class="btn btn-ghost btn-sm" type="button">Refresh</button>
+          </div>
+          <ul id="incident-list" class="incident-list" aria-live="polite">
+            <li class="row-skeleton skeleton"></li><li class="row-skeleton skeleton"></li><li class="row-skeleton skeleton"></li>
+          </ul>
+        </div>
+        <div id="detail-view" hidden></div>
+      </section>
+    </div>
+
+    <section class="card feed-card" aria-label="Live activity">
+      <div class="panel-head">
+        <h2>Live activity</h2>
+        <span class="muted small">Server-Sent Events from <code>/events</code></span>
+      </div>
+      <ol id="feed" class="feed" aria-live="polite">
+        <li class="empty">Waiting for live events… create or update an incident to see it here.</li>
+      </ol>
+    </section>
+  </main>
+
+  <dialog id="create-dialog" class="dialog" aria-labelledby="create-title">
+    <form id="create-form" novalidate>
+      <div class="dialog-head">
+        <h2 id="create-title">New incident</h2>
+        <button type="button" class="btn btn-ghost btn-icon" data-close aria-label="Close">×</button>
+      </div>
+      <p id="create-role-note" class="note" hidden></p>
+      <div class="field">
+        <label for="f-title">Title</label>
+        <input id="f-title" name="title" autocomplete="off" placeholder="e.g. Flash flooding in Lower Manhattan" />
+        <p class="field-error" data-error-for="title"></p>
+      </div>
+      <div class="field">
+        <label for="f-description">Description</label>
+        <textarea id="f-description" name="description" rows="3" placeholder="What is happening and where? A place name in the text is geocoded automatically."></textarea>
+        <p class="field-error" data-error-for="description"></p>
+      </div>
+      <div class="field">
+        <label for="f-location">Location name <span class="muted">(optional)</span></label>
+        <input id="f-location" name="location_name" autocomplete="off" placeholder="Overrides location extraction, e.g. Mumbai" />
+        <p class="field-error" data-error-for="location_name"></p>
+      </div>
+      <div class="field">
+        <label for="f-tags">Tags <span class="muted">(comma separated)</span></label>
+        <input id="f-tags" name="tags" autocomplete="off" placeholder="flood, urban" />
+        <p class="field-error" data-error-for="tags"></p>
+      </div>
+      <p id="create-general-error" class="form-error" role="alert" hidden></p>
+      <div id="create-result" class="create-result" hidden></div>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="create-submit">Create incident</button>
+      </div>
     </form>
-  </div>
+  </dialog>
 
-  <div class="card">
-    <div id="status">Connecting…</div>
-    <div id="events"></div>
-  </div>
-</main>
-<script>
-  const statusEl = document.getElementById('status');
-  const eventsEl = document.getElementById('events');
-  const source = new EventSource('/events');
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
 
-  source.addEventListener('connected', () => { statusEl.textContent = 'Connected – waiting for events'; });
-  source.onerror = () => { statusEl.textContent = 'Disconnected – retrying…'; };
-
-  for (const type of ['disaster_created', 'disaster_updated', 'disaster_deleted']) {
-    source.addEventListener(type, (e) => {
-      const { disaster, actor, at } = JSON.parse(e.data);
-      const loc = disaster.location;
-      const where = loc.lat != null ? `${loc.name ?? ''} (${loc.lat.toFixed(3)}, ${loc.lng.toFixed(3)})` : `${loc.name ?? 'unknown'} – unresolved`;
-      const div = document.createElement('div');
-      div.className = 'event';
-      div.innerHTML = `<b></b> <span></span><br><small></small>`;
-      div.querySelector('b').textContent = type;
-      div.querySelector('span').textContent = `${disaster.title} [${disaster.status}] – ${where}`;
-      div.querySelector('small').textContent = `by ${actor} at ${new Date(at).toLocaleTimeString()} · id ${disaster.id}`;
-      eventsEl.prepend(div);
-    });
-  }
-
-  document.getElementById('create').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const result = document.getElementById('result');
-    const body = {
-      title: document.getElementById('title').value,
-      description: document.getElementById('description').value,
-      tags: document.getElementById('tags').value.split(',').map((t) => t.trim()).filter(Boolean),
-    };
-    const res = await fetch('/disasters', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${document.getElementById('token').value}` },
-      body: JSON.stringify(body),
-    });
-    const json = await res.json();
-    result.textContent = res.ok ? `Created ${json.id}` : `Error ${res.status}: ${json.error?.message}`;
-  });
-</script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

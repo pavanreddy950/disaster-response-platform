@@ -111,7 +111,7 @@
           }
         },
         {
-          "name": "Update status (owner contributor)",
+          "name": "Update status reported -> verified (owner contributor)",
           "request": {
             "method": "PATCH",
             "header": [
@@ -137,7 +137,38 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"status\": \"active\"\n}"
+              "raw": "{\n  \"status\": \"verified\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Invalid transition verified -> contained (409)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{contributorToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ],
+              "query": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"contained\"\n}"
             }
           }
         },
@@ -245,6 +276,24 @@
                 "{{disasterId}}"
               ],
               "query": []
+            }
+          }
+        },
+        {
+          "name": "History (audit trail)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/history",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "history"
+              ]
             }
           }
         }
@@ -427,6 +476,38 @@
                 "health"
               ],
               "query": []
+            }
+          }
+        },
+        {
+          "name": "Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/stats",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "stats"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Lifecycle",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/lifecycle",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "lifecycle"
+              ]
             }
           }
         }

@@ -13,7 +13,20 @@ info:
     | `contributor-token` | contributor1 | contributor |
     | `contributor2-token` | contributor2 | contributor |
 
-    **Errors** always use the envelope `{ "error": { "code", "message", "details?" } }`.
+    **Errors** always use the envelope `{ "error": { "code", "message", "details?", "request_id" } }`.
+
+    **Request ids:** every response carries `X-Request-Id`. A client-supplied `X-Request-Id` matching
+    `^[A-Za-z0-9._-]{1,64}$` is echoed back; otherwise the server generates a UUID. The same id appears
+    in `error.request_id` and in the server log line.
+
+    **Rate limiting:** `POST`, `PATCH` and `DELETE` requests are limited to
+    `RATE_LIMIT_WRITES_PER_MINUTE` (default 60) per fixed one-minute window, per authenticated user
+    (or per client IP when no valid token is sent). Excess requests get **429 `RATE_LIMITED`** with
+    a `Retry-After` header (seconds). Reads are not limited.
+
+    **Incident lifecycle:** `reported → verified → active ⇄ contained → resolved`; every open status may
+    also go straight to `resolved` (from `reported`/`verified` that means false alarm / duplicate).
+    Reopening (`resolved → active`) is admin-only. `GET /lifecycle` returns the table.
 
     **Real-time:** `GET /events` is a Server-Sent Events stream emitting `disaster_created`,
     `disaster_updated` and `disaster_deleted`.
@@ -24,6 +37,7 @@ tags:
   - name: Resources
   - name: Reports
   - name: Realtime
+  - name: Dashboard
 security: []
 paths:
   /disasters:
@@ -34,6 +48,7 @@ paths:
         Location is resolved in this order: explicit `lat`/`lng` → `location_name` geocoded →
         place extracted from `description` and geocoded. If geocoding fails the disaster is still
         created with `location.source = "unresolved"`.
+        Initial `status` may be `reported` (default), `verified` or `active`.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -49,12 +64,14 @@ paths:
           description: Created
           headers:
             Location: { schema: { type: string } }
+            X-Request-Id: { $ref: '#/components/headers/X-Request-Id' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Disaster' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
     get:
       tags: [Disasters]
       summary: List disasters (newest first)
@@ -92,18 +109,33 @@ paths:
       tags: [Disasters]
       summary: Update a disaster (admin any; contributor own only)
       description: |
-        Partial update. Business rule: a `resolved` disaster can only be reopened by an admin.
+        Partial update. Status changes must follow the lifecycle (see `GET /lifecycle`):
+
+        | from | allowed to |
+        |---|---|
+        | reported | verified, resolved |
+        | verified | active, resolved |
+        | active | contained, resolved |
+        | contained | active, resolved |
+        | resolved | active (**admin only**) |
+
+        Setting the current status again is a no-op. Checks run in this order: ownership (403),
+        reopen-by-non-admin (403), illegal transition (409 `INVALID_STATUS_TRANSITION`).
         Location is re-resolved only when `lat/lng`, `location_name` or `description` change.
+
+        Every effective change is written to the audit trail (`GET /disasters/{id}/history`) in the same
+        transaction. A PATCH that changes nothing returns the disaster unchanged (200) without bumping
+        `updated_at`, writing an audit entry or emitting an SSE event.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/UpdateDisaster' }
-            example: { status: active }
+            example: { status: verified }
       responses:
         '200':
-          description: Updated
+          description: Updated (or unchanged, for a no-op PATCH)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Disaster' }
@@ -111,6 +143,18 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Status change not allowed by the lifecycle (`INVALID_STATUS_TRANSITION`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: INVALID_STATUS_TRANSITION
+                  message: Cannot change status from reported to contained
+                  details: { from: reported, to: contained, allowed: [verified, resolved] }
+                  request_id: 3f2b7c1e-8d4a-4c1b-9e0f-2a6d5b7c8e91
+        '429': { $ref: '#/components/responses/RateLimited' }
     delete:
       tags: [Disasters]
       summary: Delete a disaster (admin only, soft delete)
@@ -120,6 +164,84 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+  /disasters/{id}/history:
+    get:
+      tags: [Disasters]
+      summary: Audit trail of a disaster, newest first
+      description: |
+        One entry per committed change: `created`, `updated`, `status_changed` (any change that
+        includes `status`; other changed fields are listed too) and `deleted`. `changes` maps each changed
+        field (`title`, `description`, `tags`, `status`, `location.name`, `location.lat`,
+        `location.lng`, `location.source`) to `{ from, to }`; it is `{}` for `created` and `deleted`.
+        Deleted disasters return 404, like every other read.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
+              example:
+                data:
+                  - id: 3
+                    action: status_changed
+                    actor: admin
+                    changes: { status: { from: reported, to: verified } }
+                    at: '2026-10-25T10:05:00.000Z'
+                  - id: 1
+                    action: created
+                    actor: contributor1
+                    changes: {}
+                    at: '2026-10-25T10:00:00.000Z'
+        '404': { $ref: '#/components/responses/NotFound' }
+  /lifecycle:
+    get:
+      tags: [Disasters]
+      summary: The disaster status state machine
+      description: Lets clients offer only valid status changes instead of duplicating the rules.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Lifecycle' }
+              example:
+                statuses: [reported, verified, active, contained, resolved]
+                initial: [reported, verified, active]
+                transitions:
+                  reported: [verified, resolved]
+                  verified: [active, resolved]
+                  active: [contained, resolved]
+                  contained: [active, resolved]
+                  resolved: [active]
+                admin_only: [{ from: resolved, to: active }]
+  /stats:
+    get:
+      tags: [Dashboard]
+      summary: Dashboard counters
+      description: |
+        Counts of live (non-deleted) disasters per status and resources per type. Every status and
+        resource type is always present (zero-filled). `unresolved_locations` counts live disasters
+        whose location could not be resolved.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stats' }
+              example:
+                disasters:
+                  total: 5
+                  by_status: { reported: 1, verified: 1, active: 1, contained: 1, resolved: 1 }
+                  unresolved_locations: 0
+                resources:
+                  total: 21
+                  by_type: { shelter: 7, hospital: 6, food: 3, water: 2, rescue: 3, medical: 0, other: 0 }
   /disasters/{id}/resources:
     get:
       tags: [Resources]
@@ -236,6 +358,7 @@ paths:
               schema: { $ref: '#/components/schemas/Resource' }
         '400': { $ref: '#/components/responses/ValidationError' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/RateLimited' }
   /events:
     get:
       tags: [Realtime]
@@ -259,7 +382,26 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+  headers:
+    X-Request-Id:
+      description: Request correlation id (echoed if supplied and well-formed, otherwise generated). Sent on every response.
+      schema: { type: string, pattern: '^[A-Za-z0-9._-]{1,64}$' }
   responses:
+    RateLimited:
+      description: Too many write requests in the current window (`RATE_LIMITED`)
+      headers:
+        Retry-After:
+          description: Seconds until the window resets
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: RATE_LIMITED
+              message: Too many write requests; retry in 42s
+              details: { limit_per_minute: 60, retry_after_seconds: 42 }
+              request_id: 3f2b7c1e-8d4a-4c1b-9e0f-2a6d5b7c8e91
     ValidationError:
       description: Validation failed (`VALIDATION_ERROR`) or malformed JSON (`INVALID_JSON`)
       content:
@@ -269,7 +411,8 @@ components:
             error:
               code: VALIDATION_ERROR
               message: Request validation failed
-              details: [{ field: title, message: Too small: expected string to have >=3 characters }]
+              details: [{ field: title, message: 'Too small: expected string to have >=3 characters' }]
+              request_id: 3f2b7c1e-8d4a-4c1b-9e0f-2a6d5b7c8e91
     Unauthorized:
       description: Missing or invalid token
       content:
@@ -288,7 +431,7 @@ components:
   schemas:
     Status:
       type: string
-      enum: [reported, active, contained, resolved]
+      enum: [reported, verified, active, contained, resolved]
     ResourceType:
       type: string
       enum: [shelter, hospital, food, water, rescue, medical, other]
@@ -322,7 +465,7 @@ components:
         lat: { type: number, minimum: -90, maximum: 90, description: Must be sent together with lng }
         lng: { type: number, minimum: -180, maximum: 180 }
         tags: { type: array, maxItems: 10, items: { type: string, pattern: '^[a-z0-9][a-z0-9_-]*$' } }
-        status: { $ref: '#/components/schemas/Status' }
+        status: { type: string, enum: [reported, verified, active], default: reported }
     UpdateDisaster:
       type: object
       additionalProperties: false
@@ -335,6 +478,52 @@ components:
         lng: { type: number }
         tags: { type: array, items: { type: string } }
         status: { $ref: '#/components/schemas/Status' }
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer, description: Monotonic; orders entries even when timestamps are equal }
+        action: { type: string, enum: [created, updated, status_changed, deleted] }
+        actor: { type: string, description: User id that made the change }
+        changes:
+          type: object
+          description: Changed fields, keyed by field path
+          additionalProperties:
+            type: object
+            properties:
+              from: {}
+              to: {}
+        at: { type: string, format: date-time }
+    Lifecycle:
+      type: object
+      properties:
+        statuses: { type: array, items: { $ref: '#/components/schemas/Status' } }
+        initial: { type: array, description: Statuses allowed on create, items: { $ref: '#/components/schemas/Status' } }
+        transitions:
+          type: object
+          description: For each status, the statuses it may move to
+          additionalProperties: { type: array, items: { $ref: '#/components/schemas/Status' } }
+        admin_only:
+          type: array
+          description: Transitions only admins may perform
+          items:
+            type: object
+            properties:
+              from: { $ref: '#/components/schemas/Status' }
+              to: { $ref: '#/components/schemas/Status' }
+    Stats:
+      type: object
+      properties:
+        disasters:
+          type: object
+          properties:
+            total: { type: integer }
+            by_status: { type: object, additionalProperties: { type: integer } }
+            unresolved_locations: { type: integer }
+        resources:
+          type: object
+          properties:
+            total: { type: integer }
+            by_type: { type: object, additionalProperties: { type: integer } }
     Resource:
       type: object
       properties:
@@ -372,3 +561,4 @@ components:
             code: { type: string }
             message: { type: string }
             details: {}
+            request_id: { type: string, description: Same value as the X-Request-Id response header }

@@ -49,10 +49,10 @@ describe('real-time events (SSE)', () => {
         disaster: { id: disaster.id },
       });
 
-      await post(`/disasters/${disaster.id}`, 'PATCH', { status: 'active' });
+      await post(`/disasters/${disaster.id}`, 'PATCH', { status: 'verified' });
       expect(await nextEvent('disaster_updated')).toMatchObject({
         type: 'disaster_updated',
-        disaster: { id: disaster.id, status: 'active' },
+        disaster: { id: disaster.id, status: 'verified' },
       });
     } finally {
       abort.abort();

@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { BoundingBox } from '../../lib/geo.js';
-import type { CreateResourceInput, ResourceType } from './resource.schemas.js';
+import { RESOURCE_TYPES, type CreateResourceInput, type ResourceType } from './resource.schemas.js';
 
 export interface Resource {
   id: number;
@@ -54,6 +54,17 @@ export class ResourceRepository {
     ).map(toResource);
     const { total } = this.db.prepare(`SELECT COUNT(*) AS total FROM resources ${where}`).get(params) as { total: number };
     return { items, total };
+  }
+
+  /** Resources per type; every type is present, zero-filled. */
+  countByType(): Record<ResourceType, number> {
+    const counts = Object.fromEntries(RESOURCE_TYPES.map((t) => [t, 0])) as Record<ResourceType, number>;
+    const rows = this.db.prepare('SELECT type, COUNT(*) AS n FROM resources GROUP BY type').all() as {
+      type: ResourceType;
+      n: number;
+    }[];
+    for (const r of rows) counts[r.type] = r.n;
+    return counts;
   }
 
   /**

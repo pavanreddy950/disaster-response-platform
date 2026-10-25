@@ -14,6 +14,7 @@ const schema = z.object({
   EXTERNAL_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
   REPORTS_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(60),
   GEOCODE_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(7 * 24 * 3600),
+  RATE_LIMIT_WRITES_PER_MINUTE: z.coerce.number().int().positive().default(60),
 });
 
 export type Config = z.infer<typeof schema>;

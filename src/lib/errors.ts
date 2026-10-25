@@ -38,6 +38,23 @@ export class ForbiddenError extends AppError {
   }
 }
 
+/** The request is valid on its own but conflicts with the resource's current state. */
+export class ConflictError extends AppError {
+  constructor(code: string, message: string, details?: unknown) {
+    super(409, code, message, details);
+  }
+}
+
+/** Carries the wait time so the limiter middleware can set `Retry-After`. */
+export class RateLimitError extends AppError {
+  constructor(public readonly retryAfterSeconds: number, limit: number) {
+    super(429, 'RATE_LIMITED', `Too many write requests; retry in ${retryAfterSeconds}s`, {
+      limit_per_minute: limit,
+      retry_after_seconds: retryAfterSeconds,
+    });
+  }
+}
+
 export class UnprocessableError extends AppError {
   constructor(code: string, message: string) {
     super(422, code, message);

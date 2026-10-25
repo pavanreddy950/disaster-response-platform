@@ -3,6 +3,7 @@ import { authenticate, currentUser, requireRole } from '../../auth/middleware.js
 import { validate } from '../../lib/validate.js';
 import { createDisasterSchema, listDisastersQuerySchema, updateDisasterSchema } from './disaster.schemas.js';
 import type { DisasterService } from './disaster.service.js';
+import { describeLifecycle } from './lifecycle.js';
 
 /**
  * Authorization matrix:
@@ -30,6 +31,10 @@ export function disasterRouter(service: DisasterService): Router {
     res.json(service.get(req.params.id));
   });
 
+  router.get('/:id/history', (req, res) => {
+    res.json({ data: service.history(req.params.id) });
+  });
+
   router.patch('/:id', authenticate, requireRole('admin', 'contributor'), async (req, res) => {
     const input = validate(updateDisasterSchema, req.body);
     res.json(await service.update(String(req.params.id), input, currentUser(req)));
@@ -40,5 +45,14 @@ export function disasterRouter(service: DisasterService): Router {
     res.status(204).end();
   });
 
+  return router;
+}
+
+/** GET /lifecycle: the status state machine, so clients only offer valid status changes. */
+export function lifecycleRouter(): Router {
+  const router = Router();
+  router.get('/', (_req, res) => {
+    res.json(describeLifecycle());
+  });
   return router;
 }

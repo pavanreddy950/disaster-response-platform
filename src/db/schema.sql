@@ -1,4 +1,6 @@
 -- Idempotent schema; applied on every startup.
+-- CREATE ... IF NOT EXISTS cannot alter an existing table, so changes to existing tables also need a
+-- step in db/connection.ts (versioned via PRAGMA user_version).
 
 CREATE TABLE IF NOT EXISTS disasters (
   id              TEXT PRIMARY KEY,                -- UUID
@@ -10,7 +12,7 @@ CREATE TABLE IF NOT EXISTS disasters (
   location_source TEXT NOT NULL DEFAULT 'unresolved'
                   CHECK (location_source IN ('client', 'geocoded', 'unresolved')),
   status          TEXT NOT NULL DEFAULT 'reported'
-                  CHECK (status IN ('reported', 'active', 'contained', 'resolved')),
+                  CHECK (status IN ('reported', 'verified', 'active', 'contained', 'resolved')),
   created_by      TEXT NOT NULL,
   created_at      TEXT NOT NULL,                   -- ISO-8601 UTC
   updated_at      TEXT NOT NULL,
@@ -31,6 +33,18 @@ CREATE TABLE IF NOT EXISTS disaster_tags (
   PRIMARY KEY (disaster_id, tag)
 );
 CREATE INDEX IF NOT EXISTS idx_disaster_tags_tag ON disaster_tags (tag, disaster_id);
+
+-- Append-only audit trail. Written in the same transaction as the change it describes,
+-- so an entry exists if and only if the change committed.
+CREATE TABLE IF NOT EXISTS disaster_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,   -- monotonic: gives a total order even for equal timestamps
+  disaster_id TEXT NOT NULL REFERENCES disasters (id),
+  action      TEXT NOT NULL CHECK (action IN ('created', 'updated', 'status_changed', 'deleted')),
+  actor       TEXT NOT NULL,                       -- user id
+  changes     TEXT NOT NULL,                       -- JSON: { "<field>": { "from": ..., "to": ... } }
+  at          TEXT NOT NULL                        -- ISO-8601 UTC
+);
+CREATE INDEX IF NOT EXISTS idx_disaster_events_disaster ON disaster_events (disaster_id, id);
 
 CREATE TABLE IF NOT EXISTS resources (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,  -- integer id required by the R*Tree index

@@ -2,7 +2,11 @@
 
 A small, backend-focused API for coordinating disaster response: create incidents, resolve their location
 from free text, find nearby resources (shelters, hospitals, water…), pull community reports from an
-external social-media service, and push live updates to clients.
+external social-media service, and push live updates to clients. Incidents follow an explicit
+**response lifecycle** with a transactional **audit trail**, and a lightweight **operations dashboard**
+(map + incident workspace) sits on top of the API to demonstrate it end to end.
+
+![Santrionn Ops dashboard](docs/dashboard.png)
 
 **Stack:** Node.js 20+ · TypeScript · Express 5 · SQLite (better-sqlite3, R\*Tree spatial index) · zod · Server-Sent Events · Vitest + Supertest
 
@@ -17,6 +21,8 @@ external social-media service, and push live updates to clients.
 - [Architecture](#architecture)
 - [API overview](#api-overview)
 - [Technical decisions](#technical-decisions)
+  - [Incident lifecycle](#incident-lifecycle)
+  - [Audit trail](#audit-trail)
   - [Database: why SQLite](#database-why-sqlite)
   - [Geospatial search](#geospatial-search)
   - [Location resolution](#location-resolution)
@@ -25,6 +31,8 @@ external social-media service, and push live updates to clients.
   - [Real-time updates](#real-time-updates)
   - [Authentication & authorization](#authentication--authorization)
   - [Validation & errors](#validation--errors)
+  - [Request IDs & rate limiting](#request-ids--rate-limiting)
+  - [Operations dashboard (frontend)](#operations-dashboard-frontend)
 - [Data model](#data-model)
 - [Testing](#testing)
 - [Assumptions](#assumptions)
@@ -41,15 +49,18 @@ Requirements: **Node.js 20+** (developed on Node 24). No database server, Docker
 ```bash
 npm install
 cp .env.example .env        # optional – every setting has a sensible default
-npm run seed                # creates ./data/app.db with demo resources + 2 sample disasters
+npm run seed                # creates ./data/app.db with 21 resources + 5 sample incidents (one per status)
 npm run dev                 # http://localhost:3000
 ```
 
 | URL | What |
 |---|---|
-| http://localhost:3000/ | Minimal client: live SSE event feed + "create disaster" form |
+| http://localhost:3000/ | **Ops dashboard**: KPIs, map, incident workspace (status actions, nearby resources, reports, history), live feed, role switcher |
 | http://localhost:3000/docs.html | Swagger UI (OpenAPI spec in [`docs/openapi.yaml`](docs/openapi.yaml)) |
 | http://localhost:3000/events | Raw SSE stream (`curl -N`) |
+
+> An existing `data/app.db` from an earlier version is migrated automatically on startup
+> (`PRAGMA user_version`, see [Audit trail](#audit-trail)), so there's no need to delete it.
 
 Other scripts:
 
@@ -158,8 +169,11 @@ Layering rules I followed:
 | POST | `/disasters` | admin, contributor | location resolved automatically |
 | GET | `/disasters` | public | `?tag=&status=&created_by=&limit=&offset=` |
 | GET | `/disasters/:id` | public | |
-| PATCH | `/disasters/:id` | admin (any) / contributor (own) | partial update |
+| PATCH | `/disasters/:id` | admin (any) / contributor (own) | partial update; status changes must follow the lifecycle (409 otherwise) |
 | DELETE | `/disasters/:id` | admin | soft delete, 204 |
+| GET | `/disasters/:id/history` | public | audit trail, newest first |
+| GET | `/lifecycle` | public | statuses + allowed transitions (drives the UI's action buttons) |
+| GET | `/stats` | public | counts per status / resource type (dashboard KPIs) |
 | GET | `/disasters/:id/resources` | public | `?lat=&lng=&radius=(km, ≤200)&type=&limit=` |
 | GET | `/disasters/:id/reports` | public | `?priority=high\|medium\|low`; `X-Cache` header |
 | GET / POST | `/resources` | public / admin | resource catalogue |
@@ -168,11 +182,13 @@ Layering rules I followed:
 
 Full request/response schemas: [`docs/openapi.yaml`](docs/openapi.yaml) (rendered at `/docs.html`).
 
-Error envelope (every error, including 404 for unknown routes and malformed JSON):
+Error envelope (every error, including 404 for unknown routes and malformed JSON). Every response also
+carries an `X-Request-Id` header, and errors repeat it as `request_id` so a user report can be matched to a log line:
 
 ```json
 { "error": { "code": "VALIDATION_ERROR", "message": "Request validation failed",
-             "details": [{ "field": "lat", "message": "Too big: expected number to be <=90" }] } }
+             "details": [{ "field": "lat", "message": "Too big: expected number to be <=90" }],
+             "request_id": "8cba542f-df09-4b06-b1e7-493571e2a01d" } }
 ```
 
 | Status | Code(s) |
@@ -181,14 +197,57 @@ Error envelope (every error, including 404 for unknown routes and malformed JSON
 | 401 | `UNAUTHORIZED` |
 | 403 | `FORBIDDEN` |
 | 404 | `NOT_FOUND` |
+| 409 | `INVALID_STATUS_TRANSITION` (details: `from`, `to`, `allowed`) |
 | 413 | `PAYLOAD_TOO_LARGE` |
 | 422 | `LOCATION_UNRESOLVED` (nearby search without any coordinates) |
+| 429 | `RATE_LIMITED` (with `Retry-After`) |
 | 503 | `UPSTREAM_UNAVAILABLE` (reports upstream down and nothing cached) |
 | 500 | `INTERNAL_ERROR` (details logged server-side, never leaked) |
 
 ---
 
 ## Technical decisions
+
+### Incident lifecycle
+
+A disaster's status isn't free text. It moves through an explicit response workflow, defined **once, as data**
+in `src/modules/disasters/lifecycle.ts`:
+
+```
+reported ──► verified ──► active ◄──► contained
+    │            │           │            │
+    └────────────┴───────────┴────────────┴──► resolved ──(admin only)──► active
+```
+
+- `resolved` is reachable from every open state (early on, it means *false alarm / duplicate*).
+- A new incident may start as `reported`, `verified` or `active`, never already `contained`/`resolved` (400).
+- An illegal move returns **409 `INVALID_STATUS_TRANSITION`** with the allowed next states in `details.allowed`.
+  It's 409 rather than 400 because the request is well-formed; it conflicts with the resource's *current state*.
+- Check order on PATCH: ownership (403) → reopening needs admin (403) → transition table (409). That way a
+  contributor gets the more useful "ask an admin" message, not a list of moves they can't use anyway.
+- `GET /lifecycle` publishes the same table, so the dashboard renders only valid buttons instead of
+  duplicating the rules. The backend stays the enforcer.
+
+### Audit trail
+
+Every change to a disaster writes a row to `disaster_events` (`created`, `updated`, `status_changed`,
+`deleted`) with the actor, timestamp and a **field-level diff**, e.g. `{"status": {"from": "reported", "to": "verified"}}`.
+It's exposed at `GET /disasters/:id/history` and shown as a timeline in the dashboard.
+
+- **Atomic:** the audit row is written in the **same SQLite transaction** as the change it describes, so an entry
+  exists *if and only if* the change committed. A test forces the audit insert to fail and asserts the update rolls back.
+- **No-op PATCH** (nothing actually changed): no audit row, no `updated_at` bump, no SSE event.
+- Tags are diffed as sets (order carries no meaning). Location changes are recorded per sub-field.
+- The table is append-only, and its monotonic ids give a total order even when timestamps are equal.
+
+**Schema migration.** Adding `verified` widens a `CHECK` constraint, which SQLite can't alter in place.
+`db/connection.ts` tracks a schema version in `PRAGMA user_version`. For older databases it rebuilds the
+`disasters` table inside a transaction, using SQLite's documented table-rebuild procedure:
+- Foreign keys are temporarily off, so the tag rows aren't cascade-deleted.
+- A `foreign_key_check` runs at the end.
+- `schema.sql` stays the single source of DDL.
+
+Covered by `tests/migration.test.ts`.
 
 ### Database: why SQLite
 
@@ -351,6 +410,40 @@ so a user cannot create records on someone else's behalf.
 - The JSON body limit is 100 kB (→ 413).
 - Configuration is validated at startup (`config.ts`), so a bad env var fails fast instead of at first use.
 
+### Request IDs & rate limiting
+
+- **Request IDs:** each request gets an id. A well-formed incoming `X-Request-Id` is reused, so one operation keeps
+  one id across services; otherwise it's a UUID. The id is returned as a header, included in every error body, and
+  prefixes every log line, so "it failed for me" reports are traceable.
+- **Rate limiting:** writes (POST/PATCH/PUT/DELETE) are limited per user (or per IP when anonymous) with a small
+  fixed-window counter: `RATE_LIMIT_WRITES_PER_MINUTE`, default 60. Exceeding it returns **429** with `Retry-After`.
+  - Reads are not limited: during an incident, people need to read freely.
+  - The counter is in-memory, which is fine for one node; expired windows are swept so memory stays bounded.
+  - With several instances it would move to Redis (`INCR` + `EXPIRE`) behind the same interface.
+
+### Operations dashboard (frontend)
+
+The brief says a polished frontend isn't required, so I kept it deliberately **thin**:
+- One page (`public/index.html` + `app.js` + `styles.css`), plain ES modules.
+- **No build step and no npm dependencies.** Leaflet for the map comes from a CDN.
+- It uses the same public API as any other client, with no private endpoints, so it also shows the API is sufficient.
+
+What it does:
+- **KPIs** from `GET /stats`.
+- **Map:** incidents coloured by status, resources by type. The filter chips double as the legend.
+- **Radius search:** selecting an incident draws the search radius (with a slider) and highlights resources from `/disasters/:id/resources`.
+- **Incident workspace:**
+  - overview
+  - lifecycle action buttons from `/lifecycle`
+  - nearby resources
+  - community reports, with a priority filter, the cache status and a retry button on 503
+  - the **audit history** timeline
+- **Role switcher** (Admin / Contributor 1 / Contributor 2 / Viewer). The UI hides actions a role can't take, but
+  always shows the API's own 401/403/409 message, because the server is the authority.
+- **Live:** an `EventSource` on `/events` updates markers, list, KPIs and the open incident in place, and resyncs after a reconnect.
+- API strings are never injected as HTML (all DOM is built from text nodes), so incident titles can't inject script.
+- Responsive down to 375px, with light/dark themes.
+
 ---
 
 ## Data model
@@ -364,17 +457,27 @@ description   TEXT                          PK(disaster_id, tag)          type  
 location_name TEXT NULL                     IDX(tag, disaster_id)         location_name TEXT NULL      (synced by triggers)
 lat, lng      REAL NULL (both or neither)                                 lat, lng   REAL
 location_source  client|geocoded|unresolved                               created_at TEXT
-status        reported|active|contained|resolved                                                        external_cache
+status        reported|verified|active|contained|resolved                                                        external_cache
 created_by    TEXT                                                                                      key PK, value JSON, expires_at
 created_at, updated_at  TEXT (ISO-8601 UTC)
 deleted_at    TEXT NULL  (soft delete)
+
+disaster_events (audit trail)
+──────────────────────────────
+id          INTEGER PK AUTOINCREMENT
+disaster_id FK → disasters
+action      created|updated|status_changed|deleted
+actor       TEXT
+changes     JSON  { field: { from, to } }
+at          TEXT
+IDX(disaster_id, id)
 ```
 
 Design notes:
 - **Tags get their own table**, not a JSON/CSV column. `?tag=flood` becomes an indexed lookup on `(tag, disaster_id)` instead of a `LIKE` scan, and it stays correct (no `flood` matching `flash-flood`). Listing aggregates tags in the same query with `json_group_array`, so there's no N+1.
 - **`location_source`** records how coordinates were obtained, so clients and operators can tell trusted coordinates from best-effort ones.
 - **Soft delete:** incident history is valuable for audit and post-incident review, so DELETE sets `deleted_at` and every read filters on it. Partial indexes (`WHERE deleted_at IS NULL`) keep the live set fast.
-- **Status lifecycle:** `reported → active → contained → resolved`. Transitions are free, except leaving `resolved` requires an admin.
+- **Status lifecycle:** enforced as a state machine (see [Incident lifecycle](#incident-lifecycle)).
 - UUIDs for disasters (safe to expose, not enumerable). Integer ids for resources, because the R\*Tree requires them.
 
 ---
@@ -385,13 +488,15 @@ Design notes:
 npm test
 ```
 
-47 tests across 5 files run in ~4 s against an in-memory SQLite database, with fakes injected for external services:
+70 tests across 9 files run in ~2 s against an in-memory SQLite database, with fakes injected for external services:
 
 | Requirement | Where |
 |---|---|
 | API endpoints | `tests/disasters.test.ts`: create/list/filter/paginate/get/patch/delete over HTTP (supertest) |
 | Validation / error scenarios | field-level 400s, unknown fields, lone `lat`, malformed JSON, 401, 404, 422, 503 |
-| Business rules | contributor can't delete; contributors edit only their own; only admin reopens `resolved`; soft delete; re-geocoding on description change |
+| Business rules | contributor can't delete; contributors edit only their own; lifecycle transitions (valid path, 409 on invalid, admin-only reopen); soft delete; re-geocoding on description change |
+| Audit & migration | `tests/audit.test.ts`: ordered history with diffs and actors, no-op PATCH writes nothing, rollback when the audit insert fails; `tests/migration.test.ts`: old schema migrates with rows, tags and FKs intact, and a second run changes nothing |
+| Platform | `tests/platform.test.ts`: request id echo/generation, 429 + `Retry-After` on writes only, `/stats` counts |
 | External integration / mocks | `tests/integrations.test.ts`: geocoder fallback, persistent geocode cache, `fetchJson` retries 5xx but not 4xx (real local HTTP server); `tests/reports.test.ts`: normalisation drops malformed posts, cache HIT/MISS, stale-if-error, request coalescing, 503 when upstream down |
 | Geospatial | `tests/resources.test.ts`: radius filter, ordering, box-corner exclusion, type filter, antimeridian, poles |
 | Real-time | `tests/realtime.test.ts`: opens a real SSE connection and asserts `disaster_created` / `disaster_updated` |
@@ -419,17 +524,20 @@ The cache takes an injectable clock, so TTL expiry is tested without sleeping.
 | In-memory cache for reports | simple, no infra | per-process; lost on restart; not shared across instances |
 | SSE instead of WebSockets | simplest correct tool for one-way push; auto-reconnect | no client→server messages (not needed) |
 | Mock bearer tokens | focus on authorization *rules* | no real identity, expiry or signing |
+| Vanilla JS dashboard instead of React/Next.js | zero build, nothing to install, reviewers open one URL | less structure if the UI grew; would move to a framework then |
+| In-memory rate limiter | no infra | per-process counts; Redis for multi-node |
 | Offset pagination | simple | can skip/duplicate rows under concurrent inserts; cursor pagination would fix it |
 | `tsx` runs TypeScript directly (no build step) | simpler setup | slightly slower cold start than precompiled JS |
 | Keyword priority classifier (bonus) | explainable, instant | not semantic ("my house is fine, no help needed" → medium) |
 
 ## Known limitations & future work
 
-- **Auth:** replace mock tokens with an identity provider (OIDC/JWT), and add rate limiting (especially on writes and `/reports`, which fan out to an upstream).
+- **Auth:** replace mock tokens with an identity provider (OIDC/JWT). Move the rate limiter to Redis, and also limit `/reports` (it fans out to an upstream).
 - **Scale-out:** Postgres + PostGIS, Redis for the cache, Redis pub/sub behind the `EventBus` so SSE works across instances.
 - **Async geocoding:** today geocoding happens inside the create request (bounded by timeout and retries). Better: create immediately as `unresolved`, enqueue a background job, then emit `disaster_updated` when coordinates arrive. The real-time channel is already in place for this.
 - **Concurrency control:** PATCH is last-write-wins. Add `ETag`/`If-Match` (optimistic locking on `updated_at`) to prevent lost updates.
-- **Audit log** of who changed what (status history), and **migrations tooling** (the schema is currently idempotent `CREATE IF NOT EXISTS`).
+- **Migrations tooling:** the hand-written `user_version` migration is fine for one step; more steps would call for a migration runner. Rows created before the audit trail existed have no `created` entry (not backfilled).
+- **Duplicate incident detection** (same place, time window and text similarity), and **resource capacity/allocation** with transactional checks against over-allocation.
 - **Location extraction:** LLM/NER extractor behind the existing interface; handle multiple locations in one description.
 - **Nominatim policy:** respect its 1 req/s limit with a client-side rate limiter if real traffic is expected (the cache already removes most repeats).
 - **Observability:** structured logs with request ids, metrics for cache hit ratio and upstream error rate.
@@ -442,6 +550,9 @@ The cache takes an injectable clock, so TTL expiry is tested without sleeping.
 
 **What it helped with:**
 - Scaffolding the project structure, and drafting the implementation of the modules, tests, OpenAPI spec, Postman collection and this README.
+- Running two parallel agents for the second iteration, which I then integrated, reviewed and re-verified:
+  - backend: lifecycle, audit trail, request ids, rate limiting, stats
+  - frontend: the dashboard
 - Talking through design options (SQLite R\*Tree vs. PostGIS, SSE vs. WebSockets, cache failure semantics).
 
 **What I designed, reviewed, modified and validated myself:**

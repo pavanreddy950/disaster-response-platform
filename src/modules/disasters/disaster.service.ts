@@ -5,7 +5,8 @@ import { ForbiddenError, NotFoundError } from '../../lib/errors.js';
 import type { EventBus } from '../../realtime/events.js';
 import type { DisasterRepository } from './disaster.repository.js';
 import type { CreateDisasterInput, ListDisastersQuery, UpdateDisasterInput } from './disaster.schemas.js';
-import type { Disaster, DisasterLocation } from './disaster.types.js';
+import type { AuditEntry, Disaster, DisasterLocation, FieldChanges } from './disaster.types.js';
+import { assertTransitionAllowed } from './lifecycle.js';
 
 export class DisasterService {
   constructor(
@@ -30,7 +31,7 @@ export class DisasterService {
       created_at: timestamp,
       updated_at: timestamp,
     };
-    this.repo.insert(disaster);
+    this.repo.insert(disaster, { action: 'created', actor: user.id, changes: {}, at: timestamp });
     this.events.publish({ type: 'disaster_created', disaster, actor: user.id, at: timestamp });
     return disaster;
   }
@@ -45,23 +46,35 @@ export class DisasterService {
     return disaster;
   }
 
+  /** Audit trail, newest first. Unknown or deleted disasters are a 404, like every other read. */
+  history(id: string): AuditEntry[] {
+    this.get(id);
+    return this.repo.history(id);
+  }
+
   async update(id: string, input: UpdateDisasterInput, user: User): Promise<Disaster> {
     const current = this.get(id);
+    // Check order: ownership (403) -> reopen needs admin (403) -> lifecycle transition (409)
     assertCanModify(current, user);
-    assertStatusTransitionAllowed(current, input, user);
+    if (input.status !== undefined) assertTransitionAllowed(current.status, input.status, user);
 
     const location = await this.nextLocation(current, input);
 
-    const updated: Disaster = {
+    const next: Disaster = {
       ...current,
       title: input.title ?? current.title,
       description: input.description ?? current.description,
       tags: input.tags ?? current.tags,
       status: input.status ?? current.status,
       location,
-      updated_at: this.now().toISOString(),
     };
-    this.repo.update(updated);
+    const changes = diffDisasters(current, next);
+    // A PATCH that changes nothing is not an event: no audit row, no updated_at bump, no SSE noise.
+    if (Object.keys(changes).length === 0) return current;
+
+    const updated: Disaster = { ...next, updated_at: this.now().toISOString() };
+    const action = 'status' in changes ? 'status_changed' : 'updated';
+    this.repo.update(updated, { action, actor: user.id, changes, at: updated.updated_at });
     this.events.publish({ type: 'disaster_updated', disaster: updated, actor: user.id, at: updated.updated_at });
     return updated;
   }
@@ -72,7 +85,9 @@ export class DisasterService {
     if (user.role !== 'admin') throw new ForbiddenError('Only admins can delete disasters');
 
     const at = this.now().toISOString();
-    if (!this.repo.softDelete(id, at)) throw new NotFoundError('Disaster', id);
+    if (!this.repo.softDelete(id, { action: 'deleted', actor: user.id, changes: {}, at })) {
+      throw new NotFoundError('Disaster', id);
+    }
     this.events.publish({ type: 'disaster_deleted', disaster: current, actor: user.id, at });
   }
 
@@ -106,10 +121,21 @@ function assertCanModify(disaster: Disaster, user: User): void {
   }
 }
 
-/** Business rule: a resolved disaster is closed; only an admin may reopen it. */
-function assertStatusTransitionAllowed(disaster: Disaster, input: UpdateDisasterInput, user: User): void {
-  const reopening = disaster.status === 'resolved' && input.status !== undefined && input.status !== 'resolved';
-  if (reopening && user.role !== 'admin') {
-    throw new ForbiddenError('Only admins can reopen a resolved disaster');
-  }
+/** Field-level diff of the audited fields; tags compare as sets since their order carries no meaning. */
+export function diffDisasters(before: Disaster, after: Disaster): FieldChanges {
+  const changes: FieldChanges = {};
+  const compare = (field: string, from: unknown, to: unknown, same = from === to) => {
+    if (!same) changes[field] = { from, to };
+  };
+  const sortedTags = (tags: string[]) => [...tags].sort().join(','); // tags cannot contain ','
+
+  compare('title', before.title, after.title);
+  compare('description', before.description, after.description);
+  compare('tags', before.tags, after.tags, sortedTags(before.tags) === sortedTags(after.tags));
+  compare('status', before.status, after.status);
+  compare('location.name', before.location.name, after.location.name);
+  compare('location.lat', before.location.lat, after.location.lat);
+  compare('location.lng', before.location.lng, after.location.lng);
+  compare('location.source', before.location.source, after.location.source);
+  return changes;
 }

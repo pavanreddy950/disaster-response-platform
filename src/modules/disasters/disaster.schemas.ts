@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DISASTER_STATUSES } from './disaster.types.js';
+import { INITIAL_STATUSES } from './lifecycle.js';
 
 const tag = z
   .string()
@@ -37,7 +38,8 @@ export const createDisasterSchema = z
     lat: fields.lat.optional(),
     lng: fields.lng.optional(),
     tags: fields.tags.optional(),
-    status: fields.status.optional(),
+    // A new incident cannot start contained/resolved; see lifecycle.ts
+    status: z.enum(INITIAL_STATUSES).optional(),
   })
   .refine(bothOrNeitherCoordinate, coordinateMessage);
 
