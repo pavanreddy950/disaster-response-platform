@@ -8,6 +8,9 @@ external social-media service, and push live updates to clients. Incidents follo
 
 ![Santrionn Ops dashboard](docs/dashboard.png)
 
+📄 **Design document (PDF):** [`docs/Design-Document.pdf`](docs/Design-Document.pdf). It covers architecture, a file-by-file
+walkthrough, the data model, each decision with alternatives considered, request flows, edge cases, testing and the roadmap.
+
 **Stack:** Node.js 20+ · TypeScript · Express 5 · SQLite (better-sqlite3, R\*Tree spatial index) · zod · Server-Sent Events · Vitest + Supertest
 
 > Guiding principle (from the brief): *build less, think deeply*. I kept the feature surface to what was
