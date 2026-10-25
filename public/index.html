@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Disaster Response – Live Feed</title>
+  <style>
+    :root { --bg: #f7f7f8; --fg: #1b1b1f; --muted: #6b6b76; --card: #fff; --border: #e3e3e8; --accent: #c2410c; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #141417; --fg: #ececf1; --muted: #9a9aa6; --card: #1d1d22; --border: #2e2e36; --accent: #fb923c; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+    main { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    p { color: var(--muted); margin: 0 0 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    form { display: grid; gap: 8px; }
+    input, textarea, select, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg); }
+    button { background: var(--accent); color: #fff; border: 0; cursor: pointer; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .row > * { flex: 1 1 160px; }
+    #status { font-size: 13px; }
+    .event { border-left: 3px solid var(--accent); padding: 6px 10px; margin: 8px 0; background: var(--bg); border-radius: 0 6px 6px 0; }
+    .event b { font-family: ui-monospace, monospace; }
+    .event small { color: var(--muted); }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Disaster Response – live event feed</h1>
+  <p>Minimal client for the <code>/events</code> Server-Sent Events stream. Create a disaster below (or via the API) and watch the event arrive. <a href="/docs.html">API docs</a></p>
+
+  <div class="card">
+    <form id="create">
+      <div class="row">
+        <select id="token">
+          <option value="admin-token">admin</option>
+          <option value="contributor-token">contributor1</option>
+          <option value="contributor2-token">contributor2</option>
+        </select>
+        <input id="title" placeholder="Title" value="Flash flooding" required />
+      </div>
+      <textarea id="description" rows="2" required>Heavy flooding has affected Manhattan, NYC.</textarea>
+      <input id="tags" placeholder="tags, comma separated" value="flood" />
+      <button>Create disaster</button>
+      <small id="result"></small>
+    </form>
+  </div>
+
+  <div class="card">
+    <div id="status">Connecting…</div>
+    <div id="events"></div>
+  </div>
+</main>
+<script>
+  const statusEl = document.getElementById('status');
+  const eventsEl = document.getElementById('events');
+  const source = new EventSource('/events');
+
+  source.addEventListener('connected', () => { statusEl.textContent = 'Connected – waiting for events'; });
+  source.onerror = () => { statusEl.textContent = 'Disconnected – retrying…'; };
+
+  for (const type of ['disaster_created', 'disaster_updated', 'disaster_deleted']) {
+    source.addEventListener(type, (e) => {
+      const { disaster, actor, at } = JSON.parse(e.data);
+      const loc = disaster.location;
+      const where = loc.lat != null ? `${loc.name ?? ''} (${loc.lat.toFixed(3)}, ${loc.lng.toFixed(3)})` : `${loc.name ?? 'unknown'} – unresolved`;
+      const div = document.createElement('div');
+      div.className = 'event';
+      div.innerHTML = `<b></b> <span></span><br><small></small>`;
+      div.querySelector('b').textContent = type;
+      div.querySelector('span').textContent = `${disaster.title} [${disaster.status}] – ${where}`;
+      div.querySelector('small').textContent = `by ${actor} at ${new Date(at).toLocaleTimeString()} · id ${disaster.id}`;
+      eventsEl.prepend(div);
+    });
+  }
+
+  document.getElementById('create').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const result = document.getElementById('result');
+    const body = {
+      title: document.getElementById('title').value,
+      description: document.getElementById('description').value,
+      tags: document.getElementById('tags').value.split(',').map((t) => t.trim()).filter(Boolean),
+    };
+    const res = await fetch('/disasters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${document.getElementById('token').value}` },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json();
+    result.textContent = res.ok ? `Created ${json.id}` : `Error ${res.status}: ${json.error?.message}`;
+  });
+</script>
+</body>
+</html>

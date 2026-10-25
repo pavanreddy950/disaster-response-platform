@@ -1,0 +1,436 @@
+{
+  "info": {
+    "name": "Disaster Response API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Run \"Create disaster (contributor)\" first; it stores disasterId for the other requests."
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "adminToken",
+      "value": "admin-token"
+    },
+    {
+      "key": "contributorToken",
+      "value": "contributor-token"
+    },
+    {
+      "key": "contributor2Token",
+      "value": "contributor2-token"
+    },
+    {
+      "key": "disasterId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Disasters",
+      "item": [
+        {
+          "name": "Create disaster (contributor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{contributorToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ],
+              "query": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Manhattan flooding\",\n  \"description\": \"Heavy flooding has affected Manhattan, NYC.\",\n  \"tags\": [\n    \"flood\",\n    \"urban\"\n  ]\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.collectionVariables.set(\"disasterId\", pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List disasters by tag",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters?tag=flood",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "flood"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get disaster",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ],
+              "query": []
+            }
+          }
+        },
+        {
+          "name": "Update status (owner contributor)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{contributorToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ],
+              "query": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"active\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Update by other contributor -> 403",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{contributor2Token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ],
+              "query": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"contained\"\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete as contributor -> 403",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{contributorToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ],
+              "query": []
+            }
+          }
+        },
+        {
+          "name": "Validation error -> 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters"
+              ],
+              "query": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"x\",\n  \"lat\": 200\n}"
+            }
+          }
+        },
+        {
+          "name": "Delete as admin",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}"
+              ],
+              "query": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Resources",
+      "item": [
+        {
+          "name": "Nearby resources (disaster location)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/resources?radius=10",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "resources"
+              ],
+              "query": [
+                {
+                  "key": "radius",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Nearby shelters (explicit point)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/resources?lat=40.7831&lng=-73.9712&radius=25&type=shelter",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "resources"
+              ],
+              "query": [
+                {
+                  "key": "lat",
+                  "value": "40.7831"
+                },
+                {
+                  "key": "lng",
+                  "value": "-73.9712"
+                },
+                {
+                  "key": "radius",
+                  "value": "25"
+                },
+                {
+                  "key": "type",
+                  "value": "shelter"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List resources",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/resources",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "resources"
+              ],
+              "query": []
+            }
+          }
+        },
+        {
+          "name": "Create resource (admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{adminToken}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/resources",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "resources"
+              ],
+              "query": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Pop-up Water Station\",\n  \"type\": \"water\",\n  \"lat\": 40.75,\n  \"lng\": -73.99\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reports",
+      "item": [
+        {
+          "name": "Community reports",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/reports",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "reports"
+              ],
+              "query": []
+            }
+          }
+        },
+        {
+          "name": "High priority reports",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/disasters/{{disasterId}}/reports?priority=high",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "disasters",
+                "{{disasterId}}",
+                "reports"
+              ],
+              "query": [
+                {
+                  "key": "priority",
+                  "value": "high"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "System",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ],
+              "query": []
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

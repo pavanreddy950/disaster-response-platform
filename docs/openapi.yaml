@@ -1,0 +1,374 @@
+openapi: 3.0.3
+info:
+  title: Disaster Response Coordination API
+  version: 1.0.0
+  description: |
+    Backend for creating disaster incidents, resolving their locations, finding nearby resources
+    and retrieving community reports.
+
+    **Auth (mock):** send `Authorization: Bearer <token>`.
+    | token | user | role |
+    |---|---|---|
+    | `admin-token` | admin | admin |
+    | `contributor-token` | contributor1 | contributor |
+    | `contributor2-token` | contributor2 | contributor |
+
+    **Errors** always use the envelope `{ "error": { "code", "message", "details?" } }`.
+
+    **Real-time:** `GET /events` is a Server-Sent Events stream emitting `disaster_created`,
+    `disaster_updated` and `disaster_deleted`.
+servers:
+  - url: http://localhost:3000
+tags:
+  - name: Disasters
+  - name: Resources
+  - name: Reports
+  - name: Realtime
+security: []
+paths:
+  /disasters:
+    post:
+      tags: [Disasters]
+      summary: Create a disaster (admin, contributor)
+      description: |
+        Location is resolved in this order: explicit `lat`/`lng` → `location_name` geocoded →
+        place extracted from `description` and geocoded. If geocoding fails the disaster is still
+        created with `location.source = "unresolved"`.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateDisaster' }
+            example:
+              title: Manhattan flooding
+              description: Heavy flooding has affected Manhattan, NYC.
+              tags: [flood, urban]
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Disaster' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [Disasters]
+      summary: List disasters (newest first)
+      parameters:
+        - { name: tag, in: query, schema: { type: string }, example: flood }
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/Status' } }
+        - { name: created_by, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Disaster' } }
+                  pagination: { $ref: '#/components/schemas/Pagination' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+  /disasters/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [Disasters]
+      summary: Get a disaster
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Disaster' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Disasters]
+      summary: Update a disaster (admin any; contributor own only)
+      description: |
+        Partial update. Business rule: a `resolved` disaster can only be reopened by an admin.
+        Location is re-resolved only when `lat/lng`, `location_name` or `description` change.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateDisaster' }
+            example: { status: active }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Disaster' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Disasters]
+      summary: Delete a disaster (admin only, soft delete)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /disasters/{id}/resources:
+    get:
+      tags: [Resources]
+      summary: Resources near a disaster, nearest first
+      description: |
+        Centre is `lat`/`lng` when provided, otherwise the disaster's resolved coordinates.
+        Uses an R*Tree bounding-box lookup followed by an exact haversine filter.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: lat, in: query, schema: { type: number, minimum: -90, maximum: 90 } }
+        - { name: lng, in: query, schema: { type: number, minimum: -180, maximum: 180 } }
+        - { name: radius, in: query, description: Radius in km, schema: { type: number, exclusiveMinimum: true, minimum: 0, maximum: 200, default: 10 } }
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/ResourceType' } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  center:
+                    type: object
+                    properties:
+                      lat: { type: number }
+                      lng: { type: number }
+                      source: { type: string, enum: [query, disaster] }
+                  radius_km: { type: number }
+                  count: { type: integer }
+                  data:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/Resource'
+                        - type: object
+                          properties:
+                            distance_km: { type: number }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Disaster has no coordinates and none were supplied (`LOCATION_UNRESOLVED`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /disasters/{id}/reports:
+    get:
+      tags: [Reports]
+      summary: Community reports for a disaster (cached, prioritised)
+      description: |
+        Fetched from the (mock) social-media service using the disaster's location name, normalised,
+        classified by priority and sorted high → low. Responses carry `X-Cache: HIT | MISS | STALE`.
+        If the upstream fails, a stale cached copy is served when available; otherwise 503.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: priority, in: query, schema: { type: string, enum: [high, medium, low] } }
+      responses:
+        '200':
+          description: OK
+          headers:
+            X-Cache: { schema: { type: string, enum: [HIT, MISS, STALE] } }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/Report' } }
+                  meta:
+                    type: object
+                    properties:
+                      query: { type: string }
+                      cache: { type: string, enum: [HIT, MISS, STALE] }
+                      fetched_at: { type: string, format: date-time }
+                      count: { type: integer }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503':
+          description: Upstream unavailable and nothing cached (`UPSTREAM_UNAVAILABLE`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /resources:
+    get:
+      tags: [Resources]
+      summary: List resources
+      parameters:
+        - { name: type, in: query, schema: { $ref: '#/components/schemas/ResourceType' } }
+        - { name: limit, in: query, schema: { type: integer, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        '200': { description: OK }
+    post:
+      tags: [Resources]
+      summary: Create a resource (admin only)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type, lat, lng]
+              properties:
+                name: { type: string }
+                type: { $ref: '#/components/schemas/ResourceType' }
+                location_name: { type: string }
+                lat: { type: number }
+                lng: { type: number }
+            example: { name: 'Red Cross Shelter', type: shelter, location_name: 'Lower East Side', lat: 40.715, lng: -73.984 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Resource' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /events:
+    get:
+      tags: [Realtime]
+      summary: Server-Sent Events stream
+      description: |
+        Emits `connected`, then `disaster_created`, `disaster_updated`, `disaster_deleted` with
+        `data: { type, disaster, actor, at }`. Optional `?disaster_id=` to follow one incident.
+        Try it: `curl -N http://localhost:3000/events`
+      parameters:
+        - { name: disaster_id, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: text/event-stream
+  /health:
+    get:
+      summary: Liveness / DB check
+      responses:
+        '200': { description: OK }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  responses:
+    ValidationError:
+      description: Validation failed (`VALIDATION_ERROR`) or malformed JSON (`INVALID_JSON`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Request validation failed
+              details: [{ field: title, message: Too small: expected string to have >=3 characters }]
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated but not allowed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Status:
+      type: string
+      enum: [reported, active, contained, resolved]
+    ResourceType:
+      type: string
+      enum: [shelter, hospital, food, water, rescue, medical, other]
+    Location:
+      type: object
+      properties:
+        name: { type: string, nullable: true }
+        lat: { type: number, nullable: true }
+        lng: { type: number, nullable: true }
+        source: { type: string, enum: [client, geocoded, unresolved] }
+    Disaster:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        location: { $ref: '#/components/schemas/Location' }
+        tags: { type: array, items: { type: string } }
+        status: { $ref: '#/components/schemas/Status' }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateDisaster:
+      type: object
+      additionalProperties: false
+      required: [title, description]
+      properties:
+        title: { type: string, minLength: 3, maxLength: 200 }
+        description: { type: string, minLength: 10, maxLength: 5000 }
+        location_name: { type: string, description: Overrides extraction from description }
+        lat: { type: number, minimum: -90, maximum: 90, description: Must be sent together with lng }
+        lng: { type: number, minimum: -180, maximum: 180 }
+        tags: { type: array, maxItems: 10, items: { type: string, pattern: '^[a-z0-9][a-z0-9_-]*$' } }
+        status: { $ref: '#/components/schemas/Status' }
+    UpdateDisaster:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string }
+        description: { type: string }
+        location_name: { type: string }
+        lat: { type: number }
+        lng: { type: number }
+        tags: { type: array, items: { type: string } }
+        status: { $ref: '#/components/schemas/Status' }
+    Resource:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        type: { $ref: '#/components/schemas/ResourceType' }
+        location:
+          type: object
+          properties:
+            name: { type: string, nullable: true }
+            lat: { type: number }
+            lng: { type: number }
+        created_at: { type: string, format: date-time }
+    Report:
+      type: object
+      properties:
+        id: { type: string }
+        content: { type: string }
+        user: { type: string }
+        created_at: { type: string, format: date-time }
+        source: { type: string }
+        priority: { type: string, enum: [high, medium, low] }
+    Pagination:
+      type: object
+      properties:
+        limit: { type: integer }
+        offset: { type: integer }
+        total: { type: integer }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
