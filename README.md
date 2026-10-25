@@ -549,17 +549,38 @@ The cache takes an injectable clock, so TTL expiry is tested without sleeping.
 
 ## AI usage
 
-**Tool used:** Claude Code (Anthropic's Claude, in the terminal).
+**Tool:** Claude Code (Anthropic), a terminal-based coding agent.
 
-**What it helped with:**
-- Scaffolding the project structure, and drafting the implementation of the modules, tests, OpenAPI spec, Postman collection and this README.
-- Running two parallel agents for the second iteration, which I then integrated, reviewed and re-verified:
-  - backend: lifecycle, audit trail, request ids, rate limiting, stats
-  - frontend: the dashboard
-- Talking through design options (SQLite R\*Tree vs. PostGIS, SSE vs. WebSockets, cache failure semantics).
+**How I used it:** as an implementation accelerator. It wrote most of the code, tests and documentation from my
+direction, and I used it to compare design options before choosing.
 
-**What I designed, reviewed, modified and validated myself:**
-<!-- ✏️ EDIT THIS SECTION so it is accurate for you before submitting. -->
-- Reviewed every module and made sure I can explain each decision above (layering, schema, two-phase geo search, cache semantics, authorization rules).
-- Validated behaviour by running the test suite and exercising the API manually (create → nearby resources → reports cache MISS/HIT → 403 on contributor delete → SSE events).
-- Chose the scope ("build less, think deeply"), the assumptions listed above, and the authorization rules (contributors edit only their own incidents; only admins reopen resolved ones).
+### Decisions I made
+
+- **Database:** I kept SQLite + R\*Tree rather than switching to Supabase/PostgreSQL. Reviewers can run it with one
+  command and there was no deadline risk. The PostGIS migration path is documented in
+  [Trade-offs](#trade-offs).
+- **Scope:** from a list of possible extras, I chose the ones that show engineering judgement:
+  - an incident lifecycle, a transactional audit trail, request IDs and rate limiting
+  - a thin dashboard
+
+  I rejected the ones that would only add surface area for this brief: a Next.js rewrite, Redis/queues, Docker and
+  LLM-based triage.
+- **Delivery order:** I shipped a complete, tested baseline (all core requirements) to GitHub first, then iterated on it.
+
+### Extras I asked for beyond the brief
+
+| Request | Result |
+|---|---|
+| A frontend, so reviewers can experience the system without testing each endpoint by hand | The operations dashboard (`public/`): map, incident workspace, live feed, role switcher |
+| Make the system feel engineered rather than CRUD | Incident lifecycle with 409 on invalid transitions, transactional audit trail with `/history`, request IDs, write rate limiting, `/stats` |
+| A document for reviewers explaining every choice | [`docs/Design-Document.pdf`](docs/Design-Document.pdf) |
+| A video walkthrough of the real project | A 5-minute showcase built from real footage, code, test output and API responses (shared separately due to its size) |
+| Plain-language explanations of the assignment and each approach | Used to make sure I can explain and defend every part of the design |
+
+### How I validated it
+
+- Ran the full test suite (70 tests) and the type checker.
+- Exercised the API end to end: create, then nearby resources, then reports (cache MISS → HIT), then the 403 and 409
+  paths, then the SSE events.
+- Ran the dashboard in a browser.
+- Reviewed the code module by module.
